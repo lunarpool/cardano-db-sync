@@ -10,6 +10,10 @@ import           Cardano.Prelude hiding (from, on)
 
 import           Cardano.BM.Trace (Trace, logError)
 
+<<<<<<< HEAD
+=======
+import           Cardano.Db (DbLovelace, RewardSource)
+>>>>>>> 52fa1f81 (db: Add PersistField RewardSource)
 import qualified Cardano.Db as Db
 
 import           Cardano.Sync.Util
@@ -18,8 +22,16 @@ import           Cardano.Slotting.Slot (EpochNo (..))
 
 import           Control.Monad.Trans.Control (MonadBaseControl)
 
+<<<<<<< HEAD
 import           Database.Esqueleto.Legacy (Value (..), from, select, sum_, val, where_, (==.),
                    (^.))
+=======
+import qualified Data.List.Extra as List
+import qualified Data.Map.Strict as Map
+
+import           Database.Esqueleto.Legacy (InnerJoin (..), Value (..), from, on, select, sum_, val,
+                   where_, (==.), (^.))
+>>>>>>> 52fa1f81 (db: Add PersistField RewardSource)
 
 import           Database.Persist.Sql (SqlBackend)
 
@@ -66,3 +78,44 @@ queryEpochRewardTotalReceived (EpochNo epochNo) = do
             where_ (ertr ^. Db.EpochRewardTotalReceivedEarnedEpoch==. val epochNo)
             pure (ertr ^. Db.EpochRewardTotalReceivedAmount)
   pure $ Db.word64ToAda . Db.unDbLovelace . unValue <$> listToMaybe res
+-- -------------------------------------------------------------------------------------------------
+
+convertRewardMap :: Network -> Map (Ledger.StakeCredential c) Coin -> Map Generic.StakeCred Coin
+convertRewardMap nw = Map.mapKeys (Generic.toStakeCred nw)
+
+
+logFullRewardMap
+    :: (MonadBaseControl IO m, MonadIO m)
+    => EpochNo -> Map Generic.StakeCred Coin -> ReaderT SqlBackend m ()
+logFullRewardMap epochNo ledgerMap = do
+    dbMap <- queryRewardMap epochNo
+    liftIO $ diffRewardMap dbMap ledgerMap
+
+
+queryRewardMap
+    :: (MonadBaseControl IO m, MonadIO m)
+    => EpochNo -> ReaderT SqlBackend m (Map Generic.StakeCred (RewardSource, DbLovelace))
+queryRewardMap (EpochNo epochNo) = do
+    res <- select . from $ \ (rwd `InnerJoin` saddr) -> do
+              on (rwd ^. Db.RewardAddrId ==. saddr ^. Db.StakeAddressId)
+              where_ (rwd ^. Db.RewardEarnedEpoch ==. val epochNo)
+              pure (saddr ^. Db.StakeAddressHashRaw, rwd ^. Db.RewardType, rwd ^.Db.RewardAmount)
+    pure $ Map.fromList (map convert res)
+  where
+    convert :: (Value ByteString, Value RewardSource, Value DbLovelace) -> (Generic.StakeCred, (RewardSource, DbLovelace))
+    convert (Value cred, Value source, Value amount) = (Generic.StakeCred cred, (source, amount))
+
+
+diffRewardMap :: Map Generic.StakeCred (RewardSource, DbLovelace) -> Map Generic.StakeCred Coin -> IO a
+diffRewardMap dbMap ledgerMap = do
+    putStrLn $ "dbMap: " ++ show (length $ Map.keys dbMap)
+    putStrLn $ "ledgerMap: " + show (length $ Map.keys ledgerMap)
+
+    panic "diffRewardMap"
+  where
+    keys :: [Generic.StakeCred]
+    keys = List.nubOrd (Map.keys dbMap ++ Map.keys ledgerMap)
+
+    diffMap :: Map Generic.StakeCred (RewardSource, DbLovelace, Coin)
+    diffMap = List.foldl' check mempty keys
+
