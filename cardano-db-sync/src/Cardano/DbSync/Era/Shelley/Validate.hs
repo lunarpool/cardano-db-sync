@@ -10,7 +10,7 @@ module Cardano.DbSync.Era.Shelley.Validate
 
 import           Cardano.Prelude hiding (from, on)
 
-import           Cardano.BM.Trace (Trace, logError, logInfo)
+import           Cardano.BM.Trace (Trace, logInfo, logWarning)
 
 import           Cardano.Db (DbLovelace, RewardSource)
 import qualified Cardano.Db as Db
@@ -46,7 +46,7 @@ validateEpochRewardsAfter tracer nw epochNo rmap = do
     -- unless (actual == 0) $
     if actual /= expected
         then do
-          liftIO . logError tracer $ mconcat
+          liftIO . logWarning tracer $ mconcat
                       [ "validateEpochRewardsAfter: rewards earned in epoch "
                       , textShow (unEpochNo epochNo), " expected total of ", textShow expected
                       , " ADA but got " , textShow actual, " ADA"
@@ -71,14 +71,14 @@ validateEpochRewardsBefore tracer epochNo = do
     mExpected <- queryEpochRewardTotalReceived epochNo
     case mExpected of
       Nothing ->
-        liftIO . logError tracer $ mconcat
+        liftIO . logWarning tracer $ mconcat
                     [ "validateEpochRewardsBefore: no expected total for rewards earned in epoch "
                     , textShow (unEpochNo epochNo)
                     ]
       Just expected ->
         liftIO $
           if actual /= expected
-            then logError tracer $ mconcat
+            then logWarning tracer $ mconcat
                     [ "validateEpochRewardsBefore: rewards earned in epoch "
                     , textShow (unEpochNo epochNo), ", expected total is ", textShow expected
                     , " ADA but actual is " , textShow actual, " ADA"
@@ -104,7 +104,7 @@ queryEpochRewardTotalReceived
     => EpochNo -> ReaderT SqlBackend m (Maybe Db.Ada)
 queryEpochRewardTotalReceived (EpochNo epochNo) = do
   res <- select . from $ \ ertr -> do
-            where_ (ertr ^. Db.EpochRewardTotalReceivedEarnedEpoch==. val epochNo)
+            where_ (ertr ^. Db.EpochRewardTotalReceivedEarnedEpoch ==. val epochNo)
             pure (ertr ^. Db.EpochRewardTotalReceivedAmount)
   pure $ Db.word64ToAda . Db.unDbLovelace . unValue <$> listToMaybe res
 
@@ -130,6 +130,10 @@ queryRewardMap (EpochNo epochNo) = do
     res <- select . from $ \ (rwd `InnerJoin` saddr) -> do
               on (rwd ^. Db.RewardAddrId ==. saddr ^. Db.StakeAddressId)
               where_ (rwd ^. Db.RewardEarnedEpoch ==. val epochNo)
+
+              -- Only want pool rewards for now.
+              where_ (Db.isJust $ rwd ^. Db.RewardPoolId)
+
               pure (saddr ^. Db.StakeAddressHashRaw, rwd ^. Db.RewardType, rwd ^.Db.RewardAmount)
     pure . Map.fromList . map collapse $ List.groupOn fst (map convert res)
   where
@@ -138,28 +142,28 @@ queryRewardMap (EpochNo epochNo) = do
 
     collapse :: [(Generic.StakeCred, (RewardSource, DbLovelace))] -> (Generic.StakeCred, Set (RewardSource, DbLovelace))
     collapse xs =
-        case xs of
-          [] -> panic "queryRewardMap.collapse"
-          x:_ -> (fst x, Set.fromList $ map snd xs)
+      case xs of
+        [] -> panic "queryRewardMap.collapse"
+        x:_ -> (fst x, Set.fromList $ map snd xs)
 
 diffRewardMap :: Map Generic.StakeCred (Set (RewardSource, DbLovelace)) -> Map Generic.StakeCred Coin -> IO ()
 diffRewardMap dbMap ledgerMap = do
     putStrLn $ "dbMap length: " ++ show (length $ Map.keys dbMap)
     putStrLn $ "ledgerMap length: " ++ show (length $ Map.keys ledgerMap)
     mapM_ print $ Map.toList diffMap
-    when (Map.size diffMap > 0) $
+    when False $ --  && (Map.size diffMap > 0) $
       panic "diffMap"
   where
     keys :: [Generic.StakeCred]
     keys = List.nubOrd (Map.keys dbMap ++ Map.keys ledgerMap)
 
     diffMap :: Map Generic.StakeCred (Set (RewardSource, DbLovelace), Coin)
-    diffMap = List.foldl' create mempty keys
+    diffMap = List.foldl' mkDiff mempty keys
 
-    create
+    mkDiff
         :: Map Generic.StakeCred (Set (RewardSource, DbLovelace), Coin) -> Generic.StakeCred
         -> Map Generic.StakeCred (Set (RewardSource, DbLovelace), Coin)
-    create !acc addr =
+    mkDiff !acc addr =
         case (Map.lookup addr dbMap, Map.lookup addr ledgerMap) of
           (Just s, Just coin) ->
                 if fromIntegral (sum . map (Db.unDbLovelace . snd) $ Set.toList s) == unCoin coin
