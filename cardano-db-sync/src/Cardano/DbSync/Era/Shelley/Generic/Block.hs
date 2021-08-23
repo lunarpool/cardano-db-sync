@@ -60,7 +60,7 @@ data BlockEra
 data Block = Block
   { blkEra :: !BlockEra
   , blkHash :: !ByteString
-  , blkPreviousHash :: !ByteString
+  , blkPreviousHash :: !(Maybe ByteString) -- Nothing is used for first block after Genesis.
   , blkCreatorPoolHash :: !ByteString
   , blkSlotLeader :: !ByteString
   , blkSlotNo :: !SlotNo
@@ -162,11 +162,11 @@ blockHash =
 blockNumber :: ShelleyBasedEra era => ShelleyBlock era -> BlockNo
 blockNumber = Shelley.bheaderBlockNo . blockBody
 
-blockPrevHash :: ShelleyBasedEra era => ShelleyBlock era -> ByteString
+blockPrevHash :: ShelleyBasedEra era => ShelleyBlock era -> Maybe ByteString
 blockPrevHash blk =
   case Shelley.bheaderPrev (Shelley.bhbody . Shelley.bheader $ Consensus.shelleyBlockRaw blk) of
-    Shelley.GenesisHash -> "Cardano.DbSync.Era.Shelley.Generic.Block.blockPrevHash"
-    Shelley.BlockHash h -> Crypto.hashToBytes (Shelley.unHashHeader h)
+    Shelley.GenesisHash -> Nothing
+    Shelley.BlockHash h -> Just $ Crypto.hashToBytes (Shelley.unHashHeader h)
 
 blockOpCert :: ShelleyBasedEra era => ShelleyBlock era -> ByteString
 blockOpCert = KES.rawSerialiseVerKeyKES . Shelley.ocertVkHot . Shelley.bheaderOCert . blockBody

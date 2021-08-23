@@ -78,7 +78,8 @@ genericRewards network epoch lstate =
     cleanup :: Map StakeCred (Set Reward) -> Rewards
     cleanup rmap =
       Rewards
-        { rwdEpoch = epoch - 1 -- Epoch in which rewards were earned.
+        { rwdEpoch = if epoch < 1 then 0 else epoch - 1  -- Epoch in which rewards were earned.
+                                                         -- The check exists for networks that start at Shelley.
         , rwdRewards = Map.filterWithKey validRewardAddress rmap
         }
 
