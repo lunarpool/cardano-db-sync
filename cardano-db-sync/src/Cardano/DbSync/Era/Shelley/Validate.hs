@@ -29,7 +29,6 @@ import           Control.Monad.Trans.Control (MonadBaseControl)
 import qualified Data.List as List
 import qualified Data.List.Extra as List
 import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
 
 import           Database.Esqueleto.Legacy (InnerJoin (..), Value (..), from, on, select, sum_, val,
                    where_, (==.), (^.))
@@ -125,7 +124,7 @@ logFullRewardMap epochNo ledgerMap = do
 
 queryRewardMap
     :: (MonadBaseControl IO m, MonadIO m)
-    => EpochNo -> ReaderT SqlBackend m (Map Generic.StakeCred (Set (RewardSource, DbLovelace)))
+    => EpochNo -> ReaderT SqlBackend m (Map Generic.StakeCred [(RewardSource, DbLovelace)])
 queryRewardMap (EpochNo epochNo) = do
     res <- select . from $ \ (rwd `InnerJoin` saddr) -> do
               on (rwd ^. Db.RewardAddrId ==. saddr ^. Db.StakeAddressId)
@@ -140,33 +139,33 @@ queryRewardMap (EpochNo epochNo) = do
     convert :: (Value ByteString, Value RewardSource, Value DbLovelace) -> (Generic.StakeCred, (RewardSource, DbLovelace))
     convert (Value cred, Value source, Value amount) = (Generic.StakeCred cred, (source, amount))
 
-    collapse :: [(Generic.StakeCred, (RewardSource, DbLovelace))] -> (Generic.StakeCred, Set (RewardSource, DbLovelace))
+    collapse :: [(Generic.StakeCred, (RewardSource, DbLovelace))] -> (Generic.StakeCred, [(RewardSource, DbLovelace)])
     collapse xs =
       case xs of
         [] -> panic "queryRewardMap.collapse"
-        x:_ -> (fst x, Set.fromList $ map snd xs)
+        x:_ -> (fst x, map snd xs)
 
-diffRewardMap :: Map Generic.StakeCred (Set (RewardSource, DbLovelace)) -> Map Generic.StakeCred Coin -> IO ()
+diffRewardMap :: Map Generic.StakeCred [(RewardSource, DbLovelace)] -> Map Generic.StakeCred Coin -> IO ()
 diffRewardMap dbMap ledgerMap = do
-    putStrLn $ "dbMap length: " ++ show (length $ Map.keys dbMap)
-    putStrLn $ "ledgerMap length: " ++ show (length $ Map.keys ledgerMap)
-    mapM_ print $ Map.toList diffMap
-    when False $ --  && (Map.size diffMap > 0) $
+    when (Map.size diffMap > 0) $ do
+      putStrLn $ "dbMap length: " ++ show (length $ Map.keys dbMap)
+      putStrLn $ "ledgerMap length: " ++ show (length $ Map.keys ledgerMap)
+      mapM_ print $ Map.toList diffMap
       panic "diffMap"
   where
     keys :: [Generic.StakeCred]
     keys = List.nubOrd (Map.keys dbMap ++ Map.keys ledgerMap)
 
-    diffMap :: Map Generic.StakeCred (Set (RewardSource, DbLovelace), Coin)
+    diffMap :: Map Generic.StakeCred ([(RewardSource, DbLovelace)], Coin)
     diffMap = List.foldl' mkDiff mempty keys
 
     mkDiff
-        :: Map Generic.StakeCred (Set (RewardSource, DbLovelace), Coin) -> Generic.StakeCred
-        -> Map Generic.StakeCred (Set (RewardSource, DbLovelace), Coin)
+        :: Map Generic.StakeCred ([(RewardSource, DbLovelace)], Coin) -> Generic.StakeCred
+        -> Map Generic.StakeCred ([(RewardSource, DbLovelace)], Coin)
     mkDiff !acc addr =
         case (Map.lookup addr dbMap, Map.lookup addr ledgerMap) of
           (Just s, Just coin) ->
-                if fromIntegral (sum . map (Db.unDbLovelace . snd) $ Set.toList s) == unCoin coin
+                if fromIntegral (sum $ map (Db.unDbLovelace . snd) s) == unCoin coin
                   then acc
                   else Map.insert addr (s, coin) acc
           (Nothing, Just coin) -> Map.insert addr (mempty, coin) acc
