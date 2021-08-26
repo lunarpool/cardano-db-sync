@@ -15,6 +15,7 @@ module Cardano.DbSync.Era.Shelley.Generic.Tx
   , TxRedeemer (..)
   , TxWithdrawal (..)
   , TxScript (..)
+  , TxDatum (..)
   , fromShelleyTx
   , fromAllegraTx
   , fromMaryTx
@@ -24,6 +25,7 @@ module Cardano.DbSync.Era.Shelley.Generic.Tx
 import           Cardano.Prelude
 
 import           Cardano.Api.Shelley (TxMetadataValue (..))
+import qualified Cardano.Api.Shelley as Api
 
 import qualified Cardano.Crypto.Hash as Crypto
 
@@ -51,8 +53,10 @@ import qualified Cardano.Ledger.ShelleyMA.TxBody as ShelleyMa
 
 import           Cardano.Slotting.Slot (SlotNo (..))
 
+import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.ByteString.Short as SBS
 import           Data.Coerce (coerce)
+import qualified Data.Aeson as Aeson
 import qualified Data.Map.Strict as Map
 import           Data.Maybe.Strict (strictMaybeToMaybe)
 import           Data.MemoBytes (MemoBytes (..))
@@ -86,6 +90,7 @@ data Tx = Tx
   , txParamProposal :: ![ParamProposal]
   , txMint :: !(Value StandardCrypto)
   , txRedeemer :: [TxRedeemer]
+  , txData :: [TxDatum]
   , txScriptSizes :: [Word64] -- this contains only the sizes of plutus scripts in witnesses
   , txScripts :: [TxScript]
   , txScriptsFee :: Coin
@@ -124,11 +129,17 @@ data TxRedeemer = TxRedeemer
   , txRedeemerFee :: !Coin
   , txRedeemerIndex :: !Word64
   , txRedeemerScriptHash :: Maybe (Either TxIn ByteString)
+  , txRedeemerDatum :: TxDatum
   }
 
 data TxScript = TxScript
   { txScriptHash :: !ByteString
   , txScriptPlutusSize :: Maybe Word64
+  }
+
+data TxDatum = TxDatum
+  { txDatumHash :: !ByteString
+  , txDatumValue :: !ByteString -- we turn this into json later.
   }
 
 fromAllegraTx :: (Word64, Shelley.Tx StandardAllegra) -> Tx
@@ -153,6 +164,7 @@ fromAllegraTx (blkIndex, tx) =
       , txParamProposal = maybe [] (convertParamProposal (Allegra Standard)) $ strictMaybeToMaybe (ShelleyMa.update rawTxBody)
       , txMint = mempty     -- Allegra does not support Multi-Assets
       , txRedeemer = []     -- Allegra does not support Redeemers
+      , txData = []
       , txScriptSizes = []    -- Allegra does not support scripts
       , txScripts = []        -- We don't populate scripts for Allegra
       , txScriptsFee = Coin 0 -- Allegra does not support scripts
@@ -202,6 +214,7 @@ fromShelleyTx (blkIndex, tx) =
       , txParamProposal = maybe [] (convertParamProposal (Shelley Standard)) $ strictMaybeToMaybe (Shelley._txUpdate $ Shelley.body tx)
       , txMint = mempty     -- Shelley does not support Multi-Assets
       , txRedeemer = []     -- Shelley does not support Redeemer
+      , txData = []
       , txScriptSizes = []    -- Shelley does not support scripts
       , txScripts = []        -- We don't populate scripts for Shelley
       , txScriptsFee = Coin 0 -- Shelley does not support scripts
@@ -242,6 +255,7 @@ fromMaryTx (blkIndex, tx) =
       , txParamProposal = maybe [] (convertParamProposal (Mary Standard)) $ strictMaybeToMaybe (ShelleyMa.update $ unTxBodyRaw tx)
       , txMint = coerceMint (ShelleyMa.mint $ unTxBodyRaw tx)
       , txRedeemer = []     -- Mary does not support Redeemer
+      , txData = []
       , txScriptSizes = []    -- Mary does not support scripts
       , txScripts = []        -- We don't populate scripts for Mary
       , txScriptsFee = Coin 0 -- Mary does not support scripts
@@ -288,6 +302,7 @@ fromAlonzoTx pp (blkIndex, tx) =
       , txParamProposal = maybe [] (convertParamProposal (Alonzo Standard)) $ strictMaybeToMaybe (getField @"update" txBody)
       , txMint = coerceMint (getField @"mint" txBody)
       , txRedeemer = redeemers
+      , txData = txDataWitness
       , txScriptSizes = sizes
       , txScripts = scripts
       , txScriptsFee = minFees
@@ -300,7 +315,7 @@ fromAlonzoTx pp (blkIndex, tx) =
         , txOutAddress = coerceAddress addr
         , txOutAdaValue = Coin ada
         , txOutMaValue = coerceMultiAsset maMap
-        , txOutDataHash = getDataHash mDataHash
+        , txOutDataHash = getDataHash <$> strictMaybeToMaybe mDataHash
         }
 
     txBody :: Ledger.TxBody StandardAlonzo
@@ -324,11 +339,8 @@ fromAlonzoTx pp (blkIndex, tx) =
         Just (Alonzo.AuxiliaryData _ scrs) ->
           map (\scr -> (Ledger.hashScript @StandardAlonzo scr, scr)) $ toList scrs
 
-    getDataHash :: ShelleyMa.StrictMaybe (Ledger.SafeHash crypto a) -> Maybe ByteString
-    getDataHash mDataHash =
-      case strictMaybeToMaybe mDataHash of
-        Nothing -> Nothing
-        Just dataHash -> Just $ Crypto.hashToBytes (Ledger.extractHash dataHash)
+    getDataHash :: Ledger.SafeHash crypto a -> ByteString
+    getDataHash dataHash = Crypto.hashToBytes (Ledger.extractHash dataHash)
 
     mkTxScript :: (ScriptHash StandardCrypto, Script (AlonzoEra StandardCrypto)) -> TxScript
     mkTxScript (hsh, script) = TxScript
@@ -389,17 +401,28 @@ fromAlonzoTx pp (blkIndex, tx) =
 
     redeemers :: [TxRedeemer]
     redeemers =
-      mkRedeemer <$> Map.toList (snd <$> Ledger.unRedeemers (getField @"txrdmrs" (getField @"wits" tx)))
+      mkRedeemer <$> Map.toList (Ledger.unRedeemers (getField @"txrdmrs" (getField @"wits" tx)))
 
-    mkRedeemer :: (Ledger.RdmrPtr, ExUnits) -> TxRedeemer
-    mkRedeemer (ptr@(Ledger.RdmrPtr tag index), exUnits) = TxRedeemer
+    mkRedeemer :: (Ledger.RdmrPtr, (Alonzo.Data StandardAlonzo, ExUnits)) -> TxRedeemer
+    mkRedeemer (ptr@(Ledger.RdmrPtr tag index), (dt, exUnits)) = TxRedeemer
       { txRedeemerMem = exUnitsMem exUnits
       , txRedeemerSteps = exUnitsSteps exUnits
       , txRedeemerFee = txscriptfee (Alonzo._prices pp) exUnits
       , txRedeemerPurpose = tag
       , txRedeemerIndex = index
       , txRedeemerScriptHash = findScriptHash ptr
+      , txRedeemerDatum = TxDatum (getDataHash $ Alonzo.hashData dt) (encodeData dt)
       }
+ 
+    encodeData :: Alonzo.Data StandardAlonzo -> ByteString
+    encodeData dt = LBS.toStrict $ Aeson.encode $
+      Api.scriptDataToJson Api.ScriptDataJsonDetailedSchema $ Api.fromAlonzoData dt
+
+    txDataWitness :: [TxDatum]
+    txDataWitness = mkTxDatum <$> (Map.toList $ Ledger.unTxDats $ Ledger.txdats' (getField @"wits" tx))
+
+    mkTxDatum :: (Ledger.SafeHash StandardCrypto a, Alonzo.Data StandardAlonzo) -> TxDatum
+    mkTxDatum (dataHash, dt) = TxDatum (getDataHash dataHash) (encodeData dt)
 
     -- For 'Spend' script, we need to resolve the 'TxIn' to find the ScriptHash
     -- so we return 'Left TxIn' and resolve it later from the db. In other cases

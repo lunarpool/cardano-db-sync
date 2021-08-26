@@ -44,6 +44,7 @@ module Cardano.Db.Insert
   , insertTxOut
   , insertWithdrawal
   , insertRedeemer
+  , insertDatum
 
   -- Export mainly for testing.
   , insertBlockChecked
@@ -209,6 +210,9 @@ insertWithdrawal = insertUnchecked "Withdrawal"
 
 insertRedeemer :: (MonadBaseControl IO m, MonadIO m) => Redeemer -> ReaderT SqlBackend m RedeemerId
 insertRedeemer = insertCheckUnique "Redeemer"
+
+insertDatum :: (MonadBaseControl IO m, MonadIO m) => Datum -> ReaderT SqlBackend m DatumId
+insertDatum = insertCheckUnique "Datum"
 
 -- -----------------------------------------------------------------------------
 
