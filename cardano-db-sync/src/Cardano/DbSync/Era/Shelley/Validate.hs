@@ -142,11 +142,11 @@ queryRewardMap (EpochNo epochNo) = do
     collapse :: [(Generic.StakeCred, (RewardSource, DbLovelace))] -> (Generic.StakeCred, [(RewardSource, DbLovelace)])
     collapse xs =
       case xs of
-        [] -> panic "queryRewardMap.collapse"
+        [] -> panic "queryRewardMap.collapse: Unexpected empty list"
         x:_ -> (fst x, map snd xs)
 
 diffRewardMap :: Map Generic.StakeCred [(RewardSource, DbLovelace)] -> Map Generic.StakeCred Coin -> IO ()
-diffRewardMap dbMap ledgerMap = do
+diffRewardMap dbMap ledgerMap =
     when (Map.size diffMap > 0) $ do
       putStrLn $ "dbMap length: " ++ show (length $ Map.keys dbMap)
       putStrLn $ "ledgerMap length: " ++ show (length $ Map.keys ledgerMap)
